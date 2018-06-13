@@ -6,6 +6,7 @@ output: html_notebook
 library(phyloseq)
 ```
 
+Load all samples from repositoray into github
 ```{r}
 setwd("~/Desktop/Desktop_3/all_small_mammal_2/qiime_out/")
 otu_table<-read.csv("~/Desktop/Desktop_3/all_small_mammal_2/qiime_out/otu.csv", sep=",",row.names=1)
