@@ -1,0 +1,316 @@
+---
+title: "Tree with Alex"
+output: html_notebook
+---
+```{r}
+library(ape)
+library(brranching)
+library(phytools)
+```
+
+
+```{r}
+random_forest_importance
+```
+
+
+```{r}
+library(phyloseq)
+setwd("~/Desktop/all_small_mammal_2/qiime_out/")
+otu_table<-read.csv("otu.csv", sep=",",row.names=1)
+otu_table<-as.matrix(otu_table)
+```
+```{r}
+impo
+```
+
+
+```{r}
+taxa<-read.csv("taxa.csv", sep=",",row.names=1)
+taxa<-as.matrix(taxa)
+```
+
+```{r}
+trefile <- read.tree("rootedtree.nwk")
+mapfile <- "~/Desktop/small_mammal_filed_mapping_4.txt"
+map <-import_qiime_sample_data(mapfile)
+otu<-otu_table(otu_table, taxa_are_rows=TRUE)
+tax<-tax_table(taxa)
+phy_tree<-read_tree(trefile)
+physeq<-phyloseq(tax,otu,map,phy_tree)
+physeq
+tax_tablle<-otu_table(physeq)
+b<-as.data.frame(tax_table)
+names(b) = 1:ncol(b)
+b
+
+```
+```{r}
+physeq_pruned = subset_samples(physeq, Species != "ARNI" & Species != "Porcupine" & Species !="BLANK" & Species !="RHY")
+physeq_pruned
+physeq_pruned = subset_samples(physeq_pruned, SampleID !="LM0035" & SampleID !="TK0000279" & SampleID !="TK0000318" & SampleID !="TK0000329" & SampleID !="TK0000398" & SampleID !="TK0000448" & SampleID !="TK0000492" & SampleID !="TK0000501" & SampleID !="TK0000675"& SampleID !="TK0000680"& SampleID !="TK0000686"& SampleID !="TK0000691"& SampleID !="TK0000672")
+physeq_pruned =subset_samples(physeq_pruned, SampleID != "ZymoContam")
+```
+
+```{r}
+mergedGP = merge_samples(physeq_pruned, "Species_Name")
+tax_table<-otu_table(mergedGP)
+tax_table
+importance<-read.table("~/Desktop/importance_species.txt")
+importance
+physeq_pruned
+
+random_forest_importance <- subset_taxa(physeq_pruned, rownames(tax_table(physeq_pruned)) %in% rownames(importance))
+random_forest_importance
+```
+```{r}
+library(vegan)
+mammals_bray <- phyloseq::distance(random_forest_importance, method = "bray", )
+meta<-sample_data(random_forest_importance)
+meanDist_bray_species <- meandist(mammals_bray, meta$Species_Name)
+meanDist_bray_species
+count(meta$Species_Name)
+library(ggplot2)
+ggplot(meta, aes(x=factor(Species_Name))) + geom_bar(stat="count")
+```
+```{r}
+meanDist_bray_species
+tree
+```
+
+```{r}
+tree<-read.tree("~/Desktop/taha_tree.multiple_2.nwk")
+tiplabels<-tree$tip.label
+tiplabels
+plot(tree)
+meta$Species_Name
+```
+
+```{r}
+tree<-chronos(rtree(length(tree$tip.label)))
+plot(tree)
+tree$tip.label= tiplabels
+plot(tree)
+library(stringr)
+tree$tip.label <- str_replace_all(tree$tip.label, "_", " ")
+tree <- drop.tip(tree,which(!(tree$tip.label %in% meta$Species_Name)))
+plot(tree)
+```
+```{r}
+tree_matrix<-cophenetic(tree)
+tree_matrix
+```
+
+```{r}
+mantel<-mantel.test(meanDist_bray_species,tree_matrix)
+mantel
+```
+```{r}
+install.packages("geomorph")
+library(geomorph)
+library(picante)
+blog<-log(b)
+blog[blog==-Inf]<-0
+
+pcab<-prcomp(blog)
+pc1<-pcab$x[,1]
+pc1
+meta
+library(reshape2)
+meta$Species
+meta_2 <- dcast(meta, Evolution_Time.1~Species_Name)
+meta_2<- meta[,c("Species_Name","Evolution_Time.1")]
+meta_3<-meta_2[!duplicated(meta_2)
+meta_3 <- meta_3[-c(9), ]
+rownames(meta_3)<-meta_3$Species_Name
+meta_3
+plot(pc1~meta_3$Evolution_Time.1)
+phylosig(tree,pc1,test=TRUE)
+```
+
+```{r}
+pc1
+contMap(tree=tree,pc1)
+```
+
+```{r}
+library(vegan)
+BMtable = cbind(rTraitCont(tree), rTraitCont(tree), rTraitCont(tree), rTraitCont(tree), rTraitCont(tree))
+varpart(meanDist_bray_species, X=BMtable, runif(n=nrow(BMtable)))
+```
+
+```{r}
+library(rgdal)
+library(maptools)
+library(raster)
+library(sf)
+library(phytools)
+
+
+mpala<-readOGR("~/Desktop/Desktop_3/Mpala_boundary_UTM37N/Mpala_UTM37N.shp")
+ 
+spgeo <- spTransform(mpala, CRS("+proj=longlat +datum=WGS84"))
+spgeo 
+plot(spgeo)
+add.pie(z=table, x=Var.1, y=Var.2, radius=sqrt(value), col=c(alpha(“orange”, 0.6), alpha(“blue”, 0.6)))
+ggplot() + geom_polygon(data = spgeo, aes(x=long, y = lat, group = group)) + 
+  coord_fixed(1.3)
+library(ggmap)
+map<-get_map(spgeo)
+ggmap(spgeo)
+PlotOnStaticMap(spgeo)
+table <- xtabs(~A+B+c, data=meta)
+p <- ggplot(spgeo, aes(long, lat)) + geom_polygon(data = spgeo, aes(x=long, y = lat, group = group)) +
+    coord_quickmap()
+install.packages("scatterpie")
+library(scatterpie)
+library(dplyr)
+meta$lat
+meta[meta$lat==0]<-0.2872222
+meta[meta$lon==0]<-0.2872222
+meta$lat[is.na(meta$lat)] <- 0
+meta$lon[is.na(meta$lon)] <- 0
+
+
+meta_count<-table(meta, c("Species_Name","lat","lon"))
+meta_count<-as.matrix(table)
+meta_count
+attach(meta)
+table<-table(meta$lon,meta$lat,meta$Species_Name)
+table
+meta<-sample_data(random_forest_importance)
+as.data.frame(meta)
+meta
+metadf = data.frame(meta)
+metadf
+meta<-as.data.frame(meta,stringsAsFactors = default.stringsAsFactors())
+meta
+mytable <- xtabs(lat+lon~Species_Name, data=metadf)
+mytable
+meta_count<-as.matrix(table)
+meta_count
+data<-melt(mytable)
+data
+subjmeans <- cast(data, Species_Name, count)
+
+tab.res <- as.data.frame(table, stringsAsFactors=FALSE)
+tab.res
+
+meta$lat[meta$lat==NA]<-0.2872222
+meta$lat[is.na(meta$lat)] <- 0.2872222
+meta$lon[is.na(meta$lon)] <- 36.89250
+class(meta$lon)
+meta<-meta[meta$lon==0.00000]<-0.2872222
+p + geom_scatterpie(aes(x=lat, y=lon, group=Species_Name, r=7),
+                    data=meta,cols=Species_Name,color=NA, alpha=.8)
+m <- as.matrix(table)
+
+
+library(tidyr)
+
+spread(table, Var.1,Var.2,value, fill = 0)
+
+library(dplyr)
+df <- mutate(speceis_location, C = paste(CCON, CLMH)) 
+df 
+library(data.table)
+species.location
+
+class(table$Var.2)
+tab.res
+class(tab.res$Var2)
+for (column in 1:2) {
+  tab.res[, column] <- as.numeric(tab.res[, column])
+}
+tab.res$Var3
+library(data.table)
+setDT(tab.res)
+tab.res$Var1
+tab.res$Var2
+class(tab.res$Var3)
+tab.res$Freq
+row.names(tab.res)
+as.list(names(tab.res))
+tab.res$[,1]
+colnames(tab.res, do.NULL = TRUE, prefix = "col")
+colnames(tab.res) <- c("lat", "long", "Species","Freq")
+tab.res<-as.data.frame(tab.res)
+tab.res
+class(tab.res$long)
+p + geom_scatterpie(aes(Var2, Var1), data=tab.res,cols= tab.res$Var3) + coord_equal()
+
+p + geom_point(aes(x=Var.1, y=Var.2, group=Va.3, radius=2),data=data)
+m
+install.packages("mapproj")
+install.packages("ggsubplot")
+library(mapproj)
+library(ggsubplot)
+p+geom_subplot(data = data, aes(x = long, y = lat, group = Species_Name, subplot = geom_bar(aes(x =Species_Name, y = Count,fill = Speices_Name, stat = "identity"))))
+
+
+
+set.seed(123)
+long <- rnorm(50, sd=100)
+lat <- rnorm(50, sd=50)
+d <- data.frame(long=long, lat=lat)
+d <- with(d, d[abs(long) < 150 & abs(lat) < 70,])
+n <- nrow(d)
+d$region <- factor(1:n)
+d$A <- abs(rnorm(n, sd=1))
+d$B <- abs(rnorm(n, sd=2))
+d$C <- abs(rnorm(n, sd=3))
+d$D <- abs(rnorm(n, sd=4))
+d$radius <- 6 * abs(rnorm(n))
+head(d)
+d
+
+
+world <- map_data('world')
+p <- ggplot(world, aes(long, lat)) +
+    geom_map(map=world, aes(map_id=region), fill=NA, color="black") +
+    coord_quickmap()
+
+p <- ggplot(spgeo, aes(long, lat)) + geom_polygon(data = spgeo, aes(x=long, y = lat, group = group)) +
+    coord_quickmap()
+p
+p + geom_scatterpie(aes(x=Var2, y=Var1, r=0.02),data=b,cols=colnames(b)[3:11], color=NA, alpha=.8)+stat_summary(fun.y = sum, na.rm = TRUE, group =colnames(b)[3:11] , color = 'black', geom ='line')
+b$Var.1  
+b$Var.2
+metadf
+mytable <- table(metadf$lat, metadf$lon, metadf$Species_Name) 
+
+read.table(text=gsub('[()]', '', mydf$x), 
+         sep=",", col.names=c('Latitute', 'Longitude'))
+table(meta$Species_Name)
+mytable
+dacast<-dcast(melt,value ~ Var.3)
+dacast
+library(tidyr)
+melt
+melt<-melt(mytable)
+melt
+b<-spread(melt,Var3,value)
+b
+t(melt[,3])
+
+timeline(table, group.col="Var.3",
+             start.col="Var.1",
+             end.col="Var.2")
+
+class()
+p + geom_scatterpie(aes(x=Var.1, y=Var.2, group=Var.3, r=value),
+                    data=m) 
+draw.pie(x, y, z, radius, scale = T, labels = NA, silent = TRUE, ...)
+
+p + geom_scatterpie(aes(x=Var2, y=Var1, r=0.02),data=b,cols=colnames(b)[3:11], color=NA, alpha=.8)+ labs(legend = "New x label")+
+   labs(fill="Species")+ scale_fill_manual(values=speciesnamePalette) + theme_classic()+ theme(axis.text.x = element_text(angle = 45, hjust = 1, size=8)) + labs(title = "Samples",y="lat", x ="lon")
+ggsave("chapter_1_samples.pdf")
+
+        scale_x_continuous(limits = c(36.82, 36.94))+
+        scale_y_continuous(limits = c(0.25, 0.53))
+scale_x_continuous(limits = c(-32, -63.20), expand = c(0, 0)) +
+scale_y_continuous(limits = c(.60, 17.66), expand = c(0, 0))+
+  guides(color=guide_legend("Species_Abundance") 
+
+```
+
