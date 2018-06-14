@@ -6,7 +6,7 @@ output: html_notebook
 library(phyloseq)
 ```
 
-Load all samples from repositoray into github
+Load all samples 
 ```{r}
 setwd("~/Desktop/Desktop_3/all_small_mammal_2/qiime_out/")
 otu_table<-read.csv("~/Desktop/Desktop_3/all_small_mammal_2/qiime_out/otu.csv", sep=",",row.names=1)
@@ -24,6 +24,467 @@ physeq<-phyloseq(tax,otu,map,phy_tree)
 rank_names(physeq)
 ```
 ```{r}
+physeq
+```
+Rare fraction code 
+```{r}
+require(parallel)
+options(mc.cores= 2)
 
+## Rarefaction curve, ggplot style
+ggrare <- function(physeq, step = 10, label = NULL, color = NULL, plot = TRUE, parallel = FALSE, se = TRUE) {
+    ## Args:
+    ## - physeq: phyloseq class object, from which abundance data are extracted
+    ## - step: Step size for sample size in rarefaction curves
+    ## - label: Default `NULL`. Character string. The name of the variable
+    ##          to map to text labels on the plot. Similar to color option
+    ##          but for plotting text.
+    ## - color: (Optional). Default ‘NULL’. Character string. The name of the
+    ##          variable to map to colors in the plot. This can be a sample
+    ##          variable (among the set returned by
+    ##          ‘sample_variables(physeq)’ ) or taxonomic rank (among the set
+    ##          returned by ‘rank_names(physeq)’).
+    ##
+    ##          Finally, The color scheme is chosen automatically by
+    ##          ‘link{ggplot}’, but it can be modified afterward with an
+    ##          additional layer using ‘scale_color_manual’.
+    ## - color: Default `NULL`. Character string. The name of the variable
+    ##          to map to text labels on the plot. Similar to color option
+    ##          but for plotting text.
+    ## - plot:  Logical, should the graphic be plotted.
+    ## - parallel: should rarefaction be parallelized (using parallel framework)
+    ## - se:    Default TRUE. Logical. Should standard errors be computed. 
+    ## require vegan
+    x <- as(otu_table(physeq), "matrix")
+    if (taxa_are_rows(physeq)) { x <- t(x) }
+
+    ## This script is adapted from vegan `rarecurve` function
+    tot <- rowSums(x)
+    S <- rowSums(x > 0)
+    nr <- nrow(x)
+
+    rarefun <- function(i) {
+        cat(paste("rarefying sample", rownames(x)[i]), sep = "\n")
+        n <- seq(1, tot[i], by = step)
+        if (n[length(n)] != tot[i]) {
+            n <- c(n, tot[i])
+        }
+        y <- rarefy(x[i, ,drop = FALSE], n, se = se)
+        if (nrow(y) != 1) {
+	    rownames(y) <- c(".S", ".se")
+            return(data.frame(t(y), Size = n, Sample = rownames(x)[i]))
+        } else {
+            return(data.frame(.S = y[1, ], Size = n, Sample = rownames(x)[i]))
+        }
+    }
+    if (parallel) {
+        out <- mclapply(seq_len(nr), rarefun, mc.preschedule = FALSE)
+    } else {
+        out <- lapply(seq_len(nr), rarefun)
+    }
+    df <- do.call(rbind, out)
+    
+    ## Get sample data 
+    if (!is.null(sample_data(physeq, FALSE))) {
+        sdf <- as(sample_data(physeq), "data.frame")
+        sdf$Sample <- rownames(sdf)
+        data <- merge(df, sdf, by = "Sample")
+        labels <- data.frame(x = tot, y = S, Sample = rownames(x))
+        labels <- merge(labels, sdf, by = "Sample")
+    }
+    
+    ## Add, any custom-supplied plot-mapped variables
+    if( length(color) > 1 ){
+        data$color <- color
+        names(data)[names(data)=="color"] <- deparse(substitute(color))
+        color <- deparse(substitute(color))
+    }
+    if( length(label) > 1 ){
+        labels$label <- label
+        names(labels)[names(labels)=="label"] <- deparse(substitute(label))
+        label <- deparse(substitute(label))
+    }
+    
+    p <- ggplot(data = data, aes_string(x = "Size", y = ".S", group = "Sample", color = color))
+    p <- p + labs(x = "Sample Size", y = "Species Richness")
+    if (!is.null(label)) {
+        p <- p + geom_text(data = labels, aes_string(x = "x", y = "y", label = label, color = color),
+                           size = 4, hjust = 0)
+    }
+    p <- p + geom_line()
+    if (se) { ## add standard error if available
+        p <- p + geom_ribbon(aes_string(ymin = ".S - .se", ymax = ".S + .se", color = NULL, fill = color), alpha = 0.2)
+    }
+    if (plot) {
+        plot(p)
+    }
+    invisible(p)
+}
+
+phylodiv <- function(physeq, theta = 0) {
+    ## Args:
+    ## - physeq: phyloseq class object, from which phylogeny and abundance data are extracted
+    ## - theta: parameter that determines the balance in the Balance Weighted Phylogenetic Diversity (see McCoy and Matsen, 2013)
+    ##          Theta = 0 corresponds to Faith's PD
+    count_to_prop <- function(x) {x/sum(x)}
+    physeq <- transform_sample_counts(physeq, count_to_prop)
+    x <- as(otu_table(physeq), "matrix")
+    if (taxa_are_rows(physeq)) { x <- t(x) }
+    phy <- phy_tree(physeq)
+    
+    ## Construct incidence matrix of the tree
+    incidence <- incidenceMatrix(phy)
+
+    ## Order incidence matrix according to community tables
+    incidence <- incidence[colnames(x), ]
+    
+    ## Create community phylogeny matrix by multiplying (community x edge matrix)
+    ## where cpm_{ij} gives the abundance of OTUs originating from branch j in community i. 
+    cpm <- x %*% incidence
+    ## Convert to incidence matrix (0/1) and multiply by edge length to obtain PD per community.
+    if (theta == 0) {
+      cpm[cpm > 0] <- 1
+    } else {
+      cpm <- pmin(cpm^theta, (1-cpm)^theta)
+    }
+    pd <-  cpm %*% phy$edge.length
+
+    ## Add sample data information
+    if (!is.null(sample_data(physeq, FALSE))) {
+        sdf <- as(sample_data(physeq), "data.frame")
+        sdf$pd <- as.vector(pd)
+        pd <- sdf
+    }
+    
+    return (pd)
+}
+
+
+ggpdrare <- function(physeq, step = 10, label = NULL, color = NULL,
+                     log = TRUE,
+                     replace = FALSE, se = TRUE, plot = TRUE, parallel = FALSE) {
+    ## Args:
+    ## - physeq: phyloseq class object, from which abundance data are extracted
+    ## - step: Step size for sample size in rarefaction curves
+    ## - label: Default `NULL`. Character string. The name of the variable
+    ##          to map to text labels on the plot. Similar to color option
+    ##          but for plotting text.
+    ## - color: (Optional). Default ‘NULL’. Character string. The name of the
+    ##          variable to map to colors in the plot. This can be a sample
+    ##          variable (among the set returned by
+    ##          ‘sample_variables(physeq)’ ) or taxonomic rank (among the set
+    ##          returned by ‘rank_names(physeq)’).
+    ##          Finally, The color scheme is chosen automatically by
+    ##          ‘link{ggplot}’, but it can be modified afterward with an
+    ##          additional layer using ‘scale_color_manual’.
+    ## - log:   (Otional). Default 'TRUE'. Logical value. Should sample size
+    ##          be represented using a log10 scale?
+    ## - replace: If TRUE, population are treated as of infinite size, with probabilities of occurence
+    ##            of a taxa computed from the (finite size) community data
+    ## - se  : Logical, should standard error be computed in addition to expected pd
+    ## - plot:  Logical, should the graphic be plotted. 
+    x <- as(otu_table(physeq), "matrix")
+    if (taxa_are_rows(physeq)) { x <- t(x) }
+    phy <- phy_tree(physeq)
+   
+    ## Construct incidence matrix of the tree
+    incidence <- incidenceMatrix(phy)
+
+    nedges <- nrow(phy$edge)
+    ## Order incidence matrix according to community tables and create
+    ## community phylogenetic matrix
+    incidence <- incidence[colnames(x), ]
+    cpm <- x %*% incidence
+    if (se) {
+        cat("Preliminary computations for se, may take some time\n")
+        cpm.var <- array(NA, dim = c(nedges, nedges, nrow(x)))
+        cpm.var.fun <- function(i) {
+            union.clade <- incidence[, i] + incidence
+            union.clade[union.clade > 0] <- 1
+            union.clade <- t(x %*% union.clade)
+            ## union.clade[s, j] is the number of individuals in subtrees
+            ## generated by cutting branches i (from outer loop) and j
+            ## in sample s
+            return(union.clade) 
+        }
+        for (i in seq_len(nedges)) {
+            if (i %% 100 == 0) {
+                cat(paste("Cutting edge", i, "out of", nedges), sep = "\n")
+            }
+            cpm.var[i, , ] <- cpm.var.fun(i)
+        }
+        ## Deprecated code, need to work on a better parallel version
+        ## if (parallel) {
+        ##     cpm.var <- mclapply(seq_len(nedges), cpm.var.fun, mc.preschedule = TRUE)
+        ## } else {
+        ##     cpm.var <- lapply(seq_len(nedges), cpm.var.fun)
+        ## }
+        ## cpm.var <- do.call(rbind, cpm.var)
+        ## dim(cpm.var) <- c(nedges, nedges, nrow(x))
+        dimnames(cpm.var) <- list(phy$edge[, 2], phy$edge[, 2], rownames(x))
+    }
+    
+    ## Compute overall Phylogenetic Diversity
+    pd <-  (0 + (cpm > 0) ) %*% phy$edge.length
+
+    
+    ## Transform community matrices to frequency data
+    tot <- rowSums(x)
+    nr <- nrow(x)
+    ## Rarefy phylogenetic diversity for one sample (i)
+    pdrare <- function(i) {
+        cat(paste("rarefying sample", rownames(x)[i]), sep = "\n")
+        ## Simplify matrices and tree to remove unnecessary computations. 
+        edges.to.keep <- cpm[i, ] > 0
+        branch.lengths <- phy$edge.length[edges.to.keep]
+        cpm.i <- cpm[i, edges.to.keep]
+        if (se) {
+            cpm.var.i <- cpm.var[ edges.to.keep, edges.to.keep, i]
+        }
+        ## sequence of sample sizes
+        n <- seq(1, tot[i], by = step)
+        if (n[length(n)] != tot[i]) 
+            n <- c(n, tot[i])
+        ## Mean and variance of pd for different sample sizes
+        ## Start with mean
+        if (replace) {
+            ## Expected cpm
+            cpm.rare <- 1 - t(outer((1 - cpm.i/tot[i]), n, "^"))
+        } else {
+            ## use lchoose instead of choose for numeric stability
+            cpm.rare <-  outer(tot[i] - cpm.i, n, lchoose)
+            cpm.rare <- sweep(cpm.rare, 2, lchoose(tot[i], n), FUN = "-")
+            cpm.rare <- t(1 - exp(cpm.rare))
+        }
+        pd.rare <- as.vector(cpm.rare %*% branch.lengths)
+        ## Continue with se, if necessary
+        if (se) {
+            cat(paste("Compute se for sample", rownames(x)[i], ", may take some time"), sep = "\n")
+            ## Variance of cpm, computed via a loop to optimize memory use
+            centering <-  (1 - cpm.rare) %*% branch.lengths
+            pd.rare.var <- rep(NA, length(n))
+            for (index in seq_along(n)) {
+                size <- n[index]
+                if (replace) {
+                    cpm.var.rare <- (1 - cpm.var.i/tot[i])^size
+                } else {
+                    ## use lchoose instead of choose for numeric stability
+                    cpm.var.rare <- lchoose(tot[i] - cpm.var.i, size) - lchoose(tot[i], size)
+                    cpm.var.rare <- exp(cpm.var.rare)
+                }
+                pd.var <- t(branch.lengths) %*% cpm.var.rare %*% branch.lengths - centering[index]^2
+                pd.rare.var[index] <- pd.var
+            }
+            pd.rare <- data.frame(pd.rare = pd.rare, se = sqrt(pd.rare.var))
+        }
+        return(data.frame(pd.rare, Size = n, Sample = rownames(x)[i]))
+    }
+        
+    if (parallel) {
+        out <- mclapply(seq_len(nr), pdrare, mc.preschedule = FALSE)
+    } else {
+        out <- lapply(seq_len(nr), pdrare)
+    }
+    df <- do.call(rbind, out)
+    
+    ## Get sample data 
+    if (!is.null(sample_data(physeq, FALSE))) {
+        sdf <- as(sample_data(physeq), "data.frame")
+        sdf$Sample <- rownames(sdf)
+        data <- merge(df, sdf, by = "Sample")
+        labels <- data.frame(x = tot, y =  pd, Sample = rownames(x))
+        labels <- merge(labels, sdf, by = "Sample")
+    }
+    
+    ## Add, any custom-supplied plot-mapped variables
+    if( length(color) > 1 ){
+        data$color <- color
+        names(data)[names(data)=="color"] <- deparse(substitute(color))
+        color <- deparse(substitute(color))
+    }
+    if( length(label) > 1 ){
+        labels$label <- label
+        names(labels)[names(labels)=="label"] <- deparse(substitute(label))
+        label <- deparse(substitute(label))
+    }
+    
+    p <- ggplot(data = data, aes_string(x = "Size", y = "pd.rare", group = "Sample", color = color))
+    if (log) {
+        p <- p + scale_x_log10()
+    }
+    p <- p + labs(x = "Sample Size (# reads)", y = "Phylogenetic Diversity")
+    if (!is.null(label)) {
+        p <- p + geom_text(data = labels, aes_string(x = "x", y = "y", label = label, color = color),
+                           size = 4, hjust = 0)
+    }
+    p <- p + geom_line()
+    if (se) {
+        p <- p + geom_ribbon(aes_string(ymin = "pd.rare - se", ymax = "pd.rare + se",
+                                        color = NULL, fill = color), alpha = 0.2)
+    }
+    if (plot) {
+        plot(p)
+    }
+    invisible(p)
+}
+```
+```{r}
+library(vegan)
+library(ggplot2)
+p <- ggrare(physeq, step = 10, color = "Species_Name", label = "Sample", se = FALSE)
+p
+p + facet_wrap(~Species_Name, scales="free")
+```
+```{r}
+physeq_pruned = subset_samples(physeq, Species != "ARNI" & Species != "Porcupine" & Species !="BLANK" & Species !="RHY")
+physeq_pruned = subset_samples(physeq_pruned, SampleID !="LM0035" & SampleID !="TK0000279" & SampleID !="TK0000318" & SampleID !="TK0000329" & SampleID !="TK0000398" & SampleID !="TK0000448" & SampleID !="TK0000492" & SampleID !="TK0000501" & SampleID !="TK0000675"& SampleID !="TK0000680"& SampleID !="TK0000686"& SampleID !="TK0000691"& SampleID !="TK0000672")
+physeq_pruned =subset_samples(physeq_pruned, SampleID != "ZymoContam")
+physeq_pruned
+```
+```{r}
+rare_physeq_pruned <- ggrare(physeq_pruned, step = 1000, color = "Species_Name", label = "Sample", se = FALSE)
+rare_physeq_pruned + facet_wrap(~Species_Name, scales="free")
+```
+```{r}
+even_physeq_pruned<-rarefy_even_depth(physeq_pruned, 10000, rngseed = FALSE, replace = FALSE, trimOTUs = TRUE, verbose = TRUE)
+```
+
+```{r}
+even_rare_physeq_pruned <- ggrare(even_physeq_pruned, step = 1000, color = "Species_Name", label = "Sample", se = FALSE)
+even_rare_physeq_pruned + facet_wrap(~Species_Name, scales="free")
+
+```
+```{r}
+library(reshape2)
+bray_even <- ordinate(even_physeq_pruned, method = "NMDS", distance = "bray")
+mammals_bray <- phyloseq::distance(even_physeq_pruned, method = "bray")
+mammals_bray.matrix<-as.data.frame.matrix(mammals_bray)
+
+mammals_bray
+melt(as.matrix(mammals_bray))
+
+```
+```{r}
+
+p = "even_physeq_pruned"
+m = "bray"
+s = "SampleID"
+d = "Species_Name"
+  
+
+ # calc distances
+  wu = phyloseq::distance(even_physeq_pruned, "bray")
+  wu.m = melt(as.matrix(wu))
+  
+  # remove self-comparisons
+  wu.m = wu.m %>%
+    filter(as.character(Var1) != as.character(Var2)) %>%
+    mutate_if(is.factor,as.character)
+  
+  # get sample data (S4 error OK and expected)
+  sd = sample_data(even_physeq_pruned) %>%
+    select(SampleID, Species_Name) %>%
+    mutate_if(is.factor,as.character)
+  
+  # combined distances with sample data
+  colnames(sd) = c("Var1", "Type1")
+  wu.sd = left_join(wu.m, sd, by = "Var1")
+  
+  colnames(sd) = c("Var2", "Type2")
+  wu.sd = left_join(wu.sd, sd, by = "Var2")
+  
+ggplot(wu.sd, aes(x = Type2, y = value)) +
+    theme_bw() +
+    geom_point() +
+    geom_boxplot(aes(color = ifelse(Type1 == Type2, "red", "black"))) +
+    scale_color_identity()  + facet_wrap(~ Type1, scales = "free_y") +
+    theme(axis.text.x=element_text(angle = 45, hjust = 1, vjust = 0.5)) + 
+    ggtitle(paste0("Bray Curtis Matrix Of Species"))+ theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black")) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+ guides(fill=guide_legend(title="Species"))
+
+```
+
+```{r}
+library("DESeq2")
+diagdds = phyloseq_to_deseq2(physeq_pruned, ~ Species_Name)
+gm_mean = function(x, na.rm=TRUE){
+  exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+}
+geoMeans = apply(counts(diagdds), 1, gm_mean)
+diagdds = estimateSizeFactors(diagdds, geoMeans = geoMeans)
+diagdds = DESeq(diagdds, fitType="local")
+diagdds
+```
+```{r}
+library("pheatmap")
+select <- order(rowMeans(counts(diagdds,normalized=TRUE)),
+                decreasing=TRUE)[1:20]
+names<-tax_table(physeq_pruned)
+names<-as.data.frame(names)
+names
+library(stringr)
+mynames = NULL
+
+names$Genus <- make.names(names$Genus, unique=TRUE)
+names
+rownames(otu)<-colnames(tax_table$Genus)
+otu
+
+rownames(otu)<-tax_table_genus_unique
+tax_table_genus_unique
+sigtab$Genus
+sigtab$Class<-gsub(".*_", "", sigtab$Class)
+sigtab$Class <- make.names(sigtab$Class, unique=TRUE)
+select <- rownames(sigtab)
+
+df <- as.data.frame(colData(diagdds)[,c("Species_Name")])
+df
+names$Genus <- make.names(names$Genus, unique=TRUE)
+ntd <- normTransform(diagdds)
+ntd
+rownames(ntd)
+colnames(names$Genus)
+rownames(ntd)<-names$Genus
+rownames(ntd)
+rownames(df) <- colnames(diagdds)
+pheatmap(assay(ntd)[select,], cluster_rows=FALSE,show_rownames=TRUE,
+         cluster_cols=TRUE, annotation_col=df)
+sampleDists <- dist(t(assay(vsd)))
+
+library("RColorBrewer")
+sampleDistMatrix <- as.matrix(sampleDists)
+vsd
+sampleDistMatrix
+rownames(sampleDistMatrix) <- paste(vsd$Species_Name, vsd$Species_Name, sep="-")
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+pheatmap(sampleDistMatrix,
+         clustering_distance_rows=sampleDists,
+         clustering_distance_cols=sampleDists,
+         col=colors)`
+
+```{r}
+source("https://bioconductor.org/biocLite.R")
+biocLite("vsn")
+library(vsn)
+vsd <- vst(diagdds, blind=FALSE)
+vsd 
+meanSdPlot(assay(vsd))
+plotPCA(vsd, intgroup=c("Species_Name"), returnData=TRUE)
+data
+ggplot(data, aes(PC1, PC2, color=Species_Name)) +
+        geom_point(size=3)
+
+
+
+rld <- rlog(diagdds, blind=FALSE)
+
+ntd <- normTransform(diagdds)
+head(assay(vsd), 3)
+```
+```{r}
+meanSdPlot(assay(ntd))
 ```
 
